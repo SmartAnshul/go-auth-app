@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -26,33 +24,26 @@ type User struct {
 var client *mongo.Client
 
 func main() {
-	// Load environment variables from .env file
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatalf("Error loading .env file: %v", err)
-	}
+	// MongoDB connection URI
+	mongoURI := "mongodb+srv://anshulagnihotri008:sIn3vjeajQ9oPj4K@cluster0.yjrxe.mongodb.net/?retryWrites=true&w=majority"
 
-	// Read the MongoDB URI from environment variables
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		log.Fatal("MONGODB_URI not set in environment variables")
-	}
-
-	// Set clientOptions and connect to MongoDB
+	// Set client options and connect to MongoDB
 	clientOptions := options.Client().ApplyURI(mongoURI)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Connect to MongoDB
+	var err error
 	client, err = mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		log.Fatalf("Failed to connect to MongoDB: %v", err)
 	}
 
-	// Test MongoDB connection
-	if err := testMongoConnection(); err != nil {
-		log.Fatalf("MongoDB connection failed: %v", err)
+	// Ping MongoDB to ensure a successful connection
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		log.Fatalf("Failed to ping MongoDB: %v", err)
 	}
+
 	log.Println("Connected to MongoDB!")
 
 	// Create a new router
@@ -61,6 +52,7 @@ func main() {
 	// Define routes
 	router.HandleFunc("/signup", SignUp).Methods("POST")
 	router.HandleFunc("/login", Login).Methods("POST")
+	router.HandleFunc("/checkMongoConnection", CheckMongoConnection).Methods("GET")
 
 	// Start the server
 	log.Fatal(http.ListenAndServe(":8000", router))
@@ -89,20 +81,20 @@ func SignUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := client.Database("go-auth").Collection("users")
+	collection := client.Database("admin").Collection("users")
 
 	// Check if user already exists
 	var result User
 	err = collection.FindOne(context.TODO(), bson.M{"email": user.Email}).Decode(&result)
 	if err == nil {
-		json.NewEncoder(w).Encode("User already exists")
+		http.Error(w, "User already exists", http.StatusConflict)
 		return
 	}
 
 	// Hash the password
 	hashedPassword, err := HashPassword(user.Password)
 	if err != nil {
-		json.NewEncoder(w).Encode("Error while hashing password")
+		http.Error(w, "Error while hashing password", http.StatusInternalServerError)
 		return
 	}
 
@@ -111,7 +103,7 @@ func SignUp(w http.ResponseWriter, r *http.Request) {
 	// Insert user into the database
 	_, err = collection.InsertOne(context.TODO(), user)
 	if err != nil {
-		json.NewEncoder(w).Encode("Error while inserting user into DB")
+		http.Error(w, "Error while inserting user into DB", http.StatusInternalServerError)
 		return
 	}
 
@@ -129,33 +121,36 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := client.Database("go-auth").Collection("users")
+	collection := client.Database("admin").Collection("users")
 
 	// Find user in the database
 	var result User
 	err = collection.FindOne(context.TODO(), bson.M{"email": user.Email}).Decode(&result)
 	if err != nil {
-		json.NewEncoder(w).Encode("User not found")
+		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
 	// Check if the password matches
 	if !CheckPasswordHash(user.Password, result.Password) {
-		json.NewEncoder(w).Encode("Invalid password")
+		http.Error(w, "Invalid password", http.StatusUnauthorized)
 		return
 	}
 
 	json.NewEncoder(w).Encode("Login successful")
 }
 
-// testMongoConnection tests the connection to MongoDB
-func testMongoConnection() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+// CheckMongoConnection checks MongoDB connection by retrieving a collection list
+func CheckMongoConnection(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 
-	err := client.Ping(ctx, nil)
+	// Check if the MongoDB connection is still alive
+	err := client.Ping(context.TODO(), nil)
 	if err != nil {
-		return err
+		http.Error(w, "MongoDB connection error", http.StatusInternalServerError)
+		return
 	}
-	return nil
+
+	// Return a success message
+	json.NewEncoder(w).Encode("MongoDB connection is alive!")
 }
