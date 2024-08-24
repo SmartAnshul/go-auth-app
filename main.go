@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -25,33 +26,43 @@ type User struct {
 var client *mongo.Client
 
 func main() {
-	// Read MongoDB URI from environment variables
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		log.Fatal("MONGODB_URI environment variable is not set")
+	// Load environment variables from .env file
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatalf("Error loading .env file: %v", err)
 	}
 
+	// Read the MongoDB URI from environment variables
+	mongoURI := os.Getenv("MONGODB_URI")
+	if mongoURI == "" {
+		log.Fatal("MONGODB_URI not set in environment variables")
+	}
+
+	// Set clientOptions and connect to MongoDB
 	clientOptions := options.Client().ApplyURI(mongoURI)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var err error
+	// Connect to MongoDB
 	client, err = mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		log.Fatalf("Failed to connect to MongoDB: %v", err)
 	}
 
-	err = client.Ping(ctx, nil)
-	if err != nil {
-		log.Fatalf("Failed to ping MongoDB: %v", err)
+	// Test MongoDB connection
+	if err := testMongoConnection(); err != nil {
+		log.Fatalf("MongoDB connection failed: %v", err)
 	}
-
 	log.Println("Connected to MongoDB!")
 
+	// Create a new router
 	router := mux.NewRouter()
+
+	// Define routes
 	router.HandleFunc("/signup", SignUp).Methods("POST")
 	router.HandleFunc("/login", Login).Methods("POST")
 
+	// Start the server
 	log.Fatal(http.ListenAndServe(":8000", router))
 }
 
@@ -80,6 +91,7 @@ func SignUp(w http.ResponseWriter, r *http.Request) {
 
 	collection := client.Database("go-auth").Collection("users")
 
+	// Check if user already exists
 	var result User
 	err = collection.FindOne(context.TODO(), bson.M{"email": user.Email}).Decode(&result)
 	if err == nil {
@@ -87,6 +99,7 @@ func SignUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hash the password
 	hashedPassword, err := HashPassword(user.Password)
 	if err != nil {
 		json.NewEncoder(w).Encode("Error while hashing password")
@@ -95,6 +108,7 @@ func SignUp(w http.ResponseWriter, r *http.Request) {
 
 	user.Password = hashedPassword
 
+	// Insert user into the database
 	_, err = collection.InsertOne(context.TODO(), user)
 	if err != nil {
 		json.NewEncoder(w).Encode("Error while inserting user into DB")
@@ -117,6 +131,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 
 	collection := client.Database("go-auth").Collection("users")
 
+	// Find user in the database
 	var result User
 	err = collection.FindOne(context.TODO(), bson.M{"email": user.Email}).Decode(&result)
 	if err != nil {
@@ -124,10 +139,23 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if the password matches
 	if !CheckPasswordHash(user.Password, result.Password) {
 		json.NewEncoder(w).Encode("Invalid password")
 		return
 	}
 
 	json.NewEncoder(w).Encode("Login successful")
+}
+
+// testMongoConnection tests the connection to MongoDB
+func testMongoConnection() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := client.Ping(ctx, nil)
+	if err != nil {
+		return err
+	}
+	return nil
 }
